@@ -114,3 +114,42 @@ def create_key():
 if __name__=="__main__":
     init_db()
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT",8080)),debug=False)
+
+# ── ADMIN DASHBOARD ──
+@app.route("/admin")
+def admin():
+    return render_template("admin.html")
+
+@app.route("/admin/dashboard")
+def admin_dashboard():
+    if request.headers.get("X-Admin-Secret") != os.environ.get("ADMIN_SECRET","changeme"):
+        return jsonify({"error":"unauthorized"}),403
+    db = get_db()
+    keys = db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    result = []
+    for k in keys:
+        stats = db.execute(
+            "SELECT COUNT(*) as total_requests, SUM(total_tokens) as total_tokens, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors FROM requests_log WHERE api_key=?",
+            (k["key"],)
+        ).fetchone()
+        result.append({
+            "key": k["key"],
+            "owner": k["owner"],
+            "active": bool(k["active"]),
+            "created_at": k["created_at"],
+            "total_requests": stats["total_requests"] or 0,
+            "total_tokens": stats["total_tokens"] or 0,
+            "errors": stats["errors"] or 0,
+        })
+    return jsonify({"keys": result})
+
+@app.route("/admin/keys/toggle", methods=["POST"])
+def toggle_key():
+    if request.headers.get("X-Admin-Secret") != os.environ.get("ADMIN_SECRET","changeme"):
+        return jsonify({"error":"unauthorized"}),403
+    body = request.get_json(silent=True) or {}
+    db = get_db()
+    db.execute("UPDATE api_keys SET active=? WHERE key=?",
+               (1 if body.get("active") else 0, body.get("key")))
+    db.commit()
+    return jsonify({"ok": True})

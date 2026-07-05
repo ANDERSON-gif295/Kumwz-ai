@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KUMWZ AI — Admin</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{--bg:#0d0d0d;--surface:#171717;--border:#262626;--accent:#7c3aed;--text:#f5f5f5;--muted:#737373;--error:#ef4444;--success:#22c55e;--warn:#f59e0b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+.logo{font-family:'Space Mono',monospace;font-size:15px;font-weight:700;background:linear-gradient(135deg,#a78bfa,#38bdf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.badge{font-size:11px;background:#1e1b4b;color:#a78bfa;padding:3px 8px;border-radius:10px;border:1px solid #312e81}
+#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-box{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px 24px;width:100%;max-width:320px}
+.login-box h2{font-size:18px;font-weight:600;margin-bottom:6px}
+.login-box p{font-size:13px;color:var(--muted);margin-bottom:24px}
+input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Inter',sans-serif;font-size:14px;outline:none;margin-bottom:14px;transition:border-color .15s}
+input:focus{border-color:var(--accent)}
+.btn{width:100%;padding:11px;background:var(--accent);border:none;border-radius:8px;color:white;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:hover{opacity:.88}
+.err{color:var(--error);font-size:13px;margin-top:10px;text-align:center;min-height:18px}
+#dashboard{display:none;padding:20px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.stat-label{font-size:12px;color:var(--muted);margin-bottom:6px}
+.stat-val{font-size:26px;font-weight:700;font-family:'Space Mono',monospace}
+.stat-val.purple{color:#a78bfa}.stat-val.cyan{color:#38bdf8}.stat-val.green{color:var(--success)}.stat-val.orange{color:var(--warn)}
+.section-title{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
+.user-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px}
+.user-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.user-name{font-size:14px;font-weight:600}
+.user-key{font-family:'Space Mono',monospace;font-size:10px;color:var(--muted);margin-bottom:10px;word-break:break-all}
+.user-stats{display:flex;gap:16px}
+.us{font-size:12px;color:var(--muted)}
+.us span{color:var(--text);font-weight:600;display:block;font-size:14px}
+.pill{font-size:11px;padding:3px 8px;border-radius:10px;font-weight:500}
+.pill.active{background:#052e16;color:var(--success);border:1px solid #14532d}
+.pill.inactive{background:#1a0808;color:var(--error);border:1px solid #7f1d1d}
+.toggle-btn{font-size:11px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif;transition:all .15s}
+.toggle-btn:hover{border-color:var(--error);color:var(--error)}
+.toggle-btn.reactivate:hover{border-color:var(--success);color:var(--success)}
+.refresh-btn{font-size:12px;padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer;font-family:'Inter',sans-serif}
+.refresh-btn:hover{border-color:var(--accent)}
+.empty{text-align:center;color:var(--muted);font-size:13px;padding:32px}
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <div class="login-box">
+    <h2>Admin Access</h2>
+    <p>KUMWZ AI Dashboard</p>
+    <input type="password" id="secret-input" placeholder="Admin secret" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn" onclick="doLogin()">Enter</button>
+    <div class="err" id="err"></div>
+  </div>
+</div>
+
+<div id="dashboard" style="display:none">
+  <div class="topbar">
+    <span class="logo">KUMWZ AI</span>
+    <span class="badge">Admin</span>
+    <button class="refresh-btn" onclick="loadData()">↻ Refresh</button>
+  </div>
+  <div style="padding:20px">
+    <div class="stats" id="stats"></div>
+    <div class="section-title">Users & API Keys</div>
+    <div id="users-list"></div>
+  </div>
+</div>
+
+<script>
+let adminSecret = '';
+
+function doLogin() {
+  const s = document.getElementById('secret-input').value.trim();
+  if (!s) return;
+  adminSecret = s;
+  loadData();
+}
+
+async function loadData() {
+  try {
+    const r = await fetch('/admin/dashboard', {
+      headers: { 'X-Admin-Secret': adminSecret }
+    });
+    if (r.status === 403) {
+      document.getElementById('err').textContent = 'Wrong secret.';
+      return;
+    }
+    const data = await r.json();
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    renderDashboard(data);
+  } catch(e) {
+    document.getElementById('err').textContent = 'Could not reach server.';
+  }
+}
+
+function renderDashboard(data) {
+  const totalRequests = data.keys.reduce((s,k) => s + (k.total_requests||0), 0);
+  const totalTokens = data.keys.reduce((s,k) => s + (k.total_tokens||0), 0);
+  const activeKeys = data.keys.filter(k => k.active).length;
+
+  document.getElementById('stats').innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-val purple">${data.keys.length}</div></div>
+    <div class="stat-card"><div class="stat-label">Active Keys</div><div class="stat-val cyan">${activeKeys}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Requests</div><div class="stat-val green">${totalRequests}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Tokens</div><div class="stat-val orange">${(totalTokens/1000).toFixed(1)}k</div></div>
+  `;
+
+  const list = document.getElementById('users-list');
+  if (!data.keys.length) { list.innerHTML = '<div class="empty">No users yet.</div>'; return; }
+
+  list.innerHTML = data.keys.map(k => `
+    <div class="user-card">
+      <div class="user-header">
+        <span class="user-name">${k.owner}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="pill ${k.active ? 'active' : 'inactive'}">${k.active ? 'Active' : 'Disabled'}</span>
+          <button class="toggle-btn ${k.active ? '' : 'reactivate'}"
+            onclick="toggleKey('${k.key}', ${k.active})">
+            ${k.active ? 'Disable' : 'Enable'}
+          </button>
+        </div>
+      </div>
+      <div class="user-key">${k.key}</div>
+      <div class="user-stats">
+        <div class="us"><span>${k.total_requests||0}</span>Requests</div>
+        <div class="us"><span>${((k.total_tokens||0)/1000).toFixed(1)}k</span>Tokens</div>
+        <div class="us"><span>${k.errors||0}</span>Errors</div>
+        <div class="us"><span>${new Date(k.created_at*1000).toLocaleDateString()}</span>Joined</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleKey(key, currentlyActive) {
+  try {
+    await fetch('/admin/keys/toggle', {
+      method: 'POST',
+      headers: { 'X-Admin-Secret': adminSecret, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, active: !currentlyActive })
+    });
+    loadData();
+  } catch(e) { alert('Failed to toggle key.'); }
+}
+</script>
+</body>
+</html>
