@@ -147,9 +147,6 @@ let session=null,provider='groq',history=[];
 function showCard(w){document.getElementById('card-login').style.display=w==='login'?'':'none';document.getElementById('card-signup').style.display=w==='signup'?'':'none'}
 function setAlert(id,msg,type){const e=document.getElementById(id);e.textContent=msg;e.className='alert '+type}
 function clearAlert(id){const e=document.getElementById(id);e.className='alert';e.textContent=''}
-function getAccounts(){try{return JSON.parse(localStorage.getItem('kumwz_accounts')||'{}')}catch{return{}}}
-function saveAccounts(a){localStorage.setItem('kumwz_accounts',JSON.stringify(a))}
-
 async function doSignup(){
   clearAlert('signup-alert');
   const name=document.getElementById('signup-name').value.trim();
@@ -158,31 +155,31 @@ async function doSignup(){
   if(!name||!email||!pass)return setAlert('signup-alert','Fill in all fields.','error');
   if(!email.includes('@'))return setAlert('signup-alert','Enter a valid email.','error');
   if(pass.length<6)return setAlert('signup-alert','Password must be at least 6 characters.','error');
-  const accounts=getAccounts();
-  if(accounts[email])return setAlert('signup-alert','Account already exists. Sign in instead.','error');
   const btn=document.getElementById('signup-btn');
   btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';
   try{
-    const r=await fetch('/admin/keys',{method:'POST',headers:{'X-Admin-Secret':ADMIN_SECRET,'Content-Type':'application/json'},body:JSON.stringify({owner:name})});
+    const r=await fetch('/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password:pass})});
     const data=await r.json();
-    if(!data.api_key)throw new Error('No key');
-    accounts[email]={name,email,password:pass,apiKey:data.api_key};
-    saveAccounts(accounts);
-    startSession({name,email,apiKey:data.api_key});
-  }catch(e){setAlert('signup-alert','Could not reach server. Try again.','error')}
+    if(!r.ok)throw new Error(data.error||'Signup failed');
+    startSession({name:data.name,email:data.email,apiKey:data.api_key});
+  }catch(e){setAlert('signup-alert',e.message||'Could not reach server. Try again.','error')}
   btn.disabled=false;btn.textContent='Create account';
 }
 
-function doLogin(){
+async function doLogin(){
   clearAlert('login-alert');
   const email=document.getElementById('login-email').value.trim().toLowerCase();
   const pass=document.getElementById('login-pass').value;
   if(!email||!pass)return setAlert('login-alert','Fill in both fields.','error');
-  const accounts=getAccounts();
-  const account=accounts[email];
-  if(!account)return setAlert('login-alert','No account found with this email.','error');
-  if(account.password!==pass)return setAlert('login-alert','Incorrect password.','error');
-  startSession(account);
+  const btn=document.getElementById('login-btn');
+  btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||'Login failed');
+    startSession({name:data.name,email:data.email,apiKey:data.api_key});
+  }catch(e){setAlert('login-alert',e.message||'Could not reach server. Try again.','error')}
+  btn.disabled=false;btn.textContent='Sign in';
 }
 
 function startSession(account){

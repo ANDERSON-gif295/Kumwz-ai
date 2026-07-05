@@ -1,0 +1,5 @@
+kumwz.db
+*.db
+ngrok
+ngrok-v3-stable-linux-arm64.zip
+__pycache__/

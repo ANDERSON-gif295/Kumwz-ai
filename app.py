@@ -1,9 +1,11 @@
 import os,sqlite3,secrets,time
 from functools import wraps
 from flask import Flask,request,jsonify,g,render_template
+from werkzeug.security import generate_password_hash,check_password_hash
 import requests
 
-DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db")
+# Persistent disk path if set (Render disk mount), else fall back to local file for dev
+DB_PATH=os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db")
 app=Flask(__name__)
 
 def get_db():
@@ -21,6 +23,7 @@ def init_db():
     conn=sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY,owner TEXT NOT NULL,created_at REAL NOT NULL,active INTEGER NOT NULL DEFAULT 1)")
     conn.execute("CREATE TABLE IF NOT EXISTS requests_log(id INTEGER PRIMARY KEY AUTOINCREMENT,api_key TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,prompt_tokens INTEGER,completion_tokens INTEGER,total_tokens INTEGER,status TEXT NOT NULL,latency_ms INTEGER,created_at REAL NOT NULL,error TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS users(email TEXT PRIMARY KEY,name TEXT NOT NULL,password_hash TEXT NOT NULL,api_key TEXT NOT NULL,created_at REAL NOT NULL)")
     conn.commit();conn.close()
 
 def require_api_key(f):
@@ -113,8 +116,48 @@ def create_key():
     db.execute("INSERT INTO api_keys(key,owner,created_at,active) VALUES(?,?,?,1)",(key,body.get("owner","unknown"),time.time()))
     db.commit();return jsonify({"api_key":key,"owner":body.get("owner","unknown")})
 
+@app.route("/api/signup",methods=["POST"])
+def signup():
+    body=request.get_json(silent=True) or {}
+    name=(body.get("name") or "").strip()
+    email=(body.get("email") or "").strip().lower()
+    password=body.get("password") or ""
+    if not name or not email or not password:
+        return jsonify({"error":"Fill in all fields."}),400
+    if "@" not in email:
+        return jsonify({"error":"Enter a valid email."}),400
+    if len(password)<6:
+        return jsonify({"error":"Password must be at least 6 characters."}),400
+    db=get_db()
+    existing=db.execute("SELECT email FROM users WHERE email=?",(email,)).fetchone()
+    if existing:
+        return jsonify({"error":"Account already exists. Sign in instead."}),409
+    api_key="kw_"+secrets.token_hex(16)
+    pw_hash=generate_password_hash(password)
+    now=time.time()
+    db.execute("INSERT INTO users(email,name,password_hash,api_key,created_at) VALUES(?,?,?,?,?)",(email,name,pw_hash,api_key,now))
+    db.execute("INSERT INTO api_keys(key,owner,created_at,active) VALUES(?,?,?,1)",(api_key,name,now))
+    db.commit()
+    return jsonify({"name":name,"email":email,"api_key":api_key})
+
+@app.route("/api/login",methods=["POST"])
+def login():
+    body=request.get_json(silent=True) or {}
+    email=(body.get("email") or "").strip().lower()
+    password=body.get("password") or ""
+    if not email or not password:
+        return jsonify({"error":"Fill in both fields."}),400
+    db=get_db()
+    user=db.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
+    if not user:
+        return jsonify({"error":"No account found with this email."}),404
+    if not check_password_hash(user["password_hash"],password):
+        return jsonify({"error":"Incorrect password."}),401
+    return jsonify({"name":user["name"],"email":user["email"],"api_key":user["api_key"]})
+
+init_db()
+
 if __name__=="__main__":
-    init_db()
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT",8080)),debug=False)
 
 # ── ADMIN DASHBOARD ──
