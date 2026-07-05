@@ -81,6 +81,8 @@ def chat():
     body=request.get_json(silent=True) or {}
     provider=(body.get("provider") or "groq").lower()
     model=body.get("model");messages=body.get("messages")
+    system_msg={"role":"system","content":"You are a helpful AI assistant. If you don't understand a question, ask for clarification instead of making up answers. Be direct and factual. Avoid lengthy explanations unless asked."}
+    messages=[system_msg]+messages
     if not messages:return jsonify({"error":"messages required"}),400
     if provider not in PROVIDERS:return jsonify({"error":f"Unknown provider. Use: {list(PROVIDERS.keys())}"}),400
     start=time.time();db=get_db()
