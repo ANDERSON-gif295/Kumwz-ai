@@ -1,6 +1,6 @@
-import os,sqlite3,secrets,time,json
+import os,sqlite3,secrets,time
 from functools import wraps
-from flask import Flask,request,jsonify,g
+from flask import Flask,request,jsonify,g,render_template
 import requests
 
 DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db")
@@ -65,6 +65,12 @@ def call_anthropic(model,messages):
     return{"text":text,"prompt_tokens":u.get("input_tokens",0),"completion_tokens":u.get("output_tokens",0),"total_tokens":u.get("input_tokens",0)+u.get("output_tokens",0),"raw_model":d.get("model",model)}
 
 PROVIDERS={"groq":call_groq,"openai":call_openai,"anthropic":call_anthropic}
+
+# ── HOMEPAGE ──
+@app.route("/")
+def index():
+    admin_secret=os.environ.get("ADMIN_SECRET","changeme")
+    return render_template("index.html",admin_secret=admin_secret)
 
 @app.route("/health")
 def health():return jsonify({"status":"ok","time":time.time()})
