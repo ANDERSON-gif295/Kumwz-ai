@@ -33,7 +33,10 @@ def close_db(e=None):
     if db:db.close()
 
 def init_db():
-    conn=get_db()
+    if USE_POSTGRES:
+        conn=psycopg2.connect(DATABASE_URL)
+    else:
+        conn=sqlite3.connect(DB_PATH)
     cursor=conn.cursor()
     if USE_POSTGRES:
         cursor.execute("""
@@ -75,6 +78,7 @@ def init_db():
         cursor.execute("CREATE TABLE IF NOT EXISTS users(email TEXT PRIMARY KEY,name TEXT NOT NULL,password_hash TEXT NOT NULL,api_key TEXT NOT NULL,created_at REAL NOT NULL)")
         conn.commit()
     cursor.close()
+    conn.close()
 
 def require_api_key(f):
     @wraps(f)
