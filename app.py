@@ -1,17 +1,30 @@
-import os,sqlite3,secrets,time
+import os,secrets,time
 from functools import wraps
 from flask import Flask,request,jsonify,g,render_template
 from werkzeug.security import generate_password_hash,check_password_hash
 import requests
 
-# Persistent disk path if set (Render disk mount), else fall back to local file for dev
-DB_PATH=os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db")
 app=Flask(__name__)
+
+DATABASE_URL=os.environ.get("DATABASE_URL")
+USE_POSTGRES=bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
+
+DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db") if not USE_POSTGRES else None
 
 def get_db():
     if "db" not in g:
-        g.db=sqlite3.connect(DB_PATH)
-        g.db.row_factory=sqlite3.Row
+        if USE_POSTGRES:
+            g.db=psycopg2.connect(DATABASE_URL)
+            g.db.cursor_factory=psycopg2.extras.RealDictCursor
+        else:
+            g.db=sqlite3.connect(DB_PATH)
+            g.db.row_factory=sqlite3.Row
     return g.db
 
 @app.teardown_appcontext
@@ -20,11 +33,48 @@ def close_db(e=None):
     if db:db.close()
 
 def init_db():
-    conn=sqlite3.connect(DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY,owner TEXT NOT NULL,created_at REAL NOT NULL,active INTEGER NOT NULL DEFAULT 1)")
-    conn.execute("CREATE TABLE IF NOT EXISTS requests_log(id INTEGER PRIMARY KEY AUTOINCREMENT,api_key TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,prompt_tokens INTEGER,completion_tokens INTEGER,total_tokens INTEGER,status TEXT NOT NULL,latency_ms INTEGER,created_at REAL NOT NULL,error TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS users(email TEXT PRIMARY KEY,name TEXT NOT NULL,password_hash TEXT NOT NULL,api_key TEXT NOT NULL,created_at REAL NOT NULL)")
-    conn.commit();conn.close()
+    conn=get_db()
+    cursor=conn.cursor()
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys(
+                key TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS requests_log(
+                id SERIAL PRIMARY KEY,
+                api_key TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                status TEXT NOT NULL,
+                latency_ms INTEGER,
+                created_at DOUBLE PRECISION NOT NULL,
+                error TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users(
+                email TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        conn.commit()
+    else:
+        cursor.execute("CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY,owner TEXT NOT NULL,created_at REAL NOT NULL,active INTEGER NOT NULL DEFAULT 1)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS requests_log(id INTEGER PRIMARY KEY AUTOINCREMENT,api_key TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,prompt_tokens INTEGER,completion_tokens INTEGER,total_tokens INTEGER,status TEXT NOT NULL,latency_ms INTEGER,created_at REAL NOT NULL,error TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS users(email TEXT PRIMARY KEY,name TEXT NOT NULL,password_hash TEXT NOT NULL,api_key TEXT NOT NULL,created_at REAL NOT NULL)")
+        conn.commit()
+    cursor.close()
 
 def require_api_key(f):
     @wraps(f)
@@ -32,7 +82,10 @@ def require_api_key(f):
         key=request.headers.get("X-API-Key") or request.args.get("api_key")
         if not key:return jsonify({"error":"Missing API key"}),401
         db=get_db()
-        row=db.execute("SELECT * FROM api_keys WHERE key=? AND active=1",(key,)).fetchone()
+        cursor=db.cursor()
+        cursor.execute("SELECT * FROM api_keys WHERE key=%s AND active=1" if USE_POSTGRES else "SELECT * FROM api_keys WHERE key=? AND active=1",(key,))
+        row=cursor.fetchone()
+        cursor.close()
         if not row:return jsonify({"error":"Invalid API key"}),403
         g.api_key=key;g.api_owner=row["owner"]
         return f(*args,**kwargs)
@@ -69,7 +122,6 @@ def call_anthropic(model,messages):
 
 PROVIDERS={"groq":call_groq,"openai":call_openai,"anthropic":call_anthropic}
 
-# ── HOMEPAGE ──
 @app.route("/")
 def index():
     admin_secret=os.environ.get("ADMIN_SECRET","changeme")
@@ -89,22 +141,33 @@ def chat():
     if not messages:return jsonify({"error":"messages required"}),400
     if provider not in PROVIDERS:return jsonify({"error":f"Unknown provider. Use: {list(PROVIDERS.keys())}"}),400
     start=time.time();db=get_db()
+    cursor=db.cursor()
     try:
         result=PROVIDERS[provider](model,messages)
         ms=int((time.time()-start)*1000)
-        db.execute("INSERT INTO requests_log(api_key,provider,model,prompt_tokens,completion_tokens,total_tokens,status,latency_ms,created_at,error) VALUES(?,?,?,?,?,?,'success',?,?,NULL)",(g.api_key,provider,result.get("raw_model",model),result["prompt_tokens"],result["completion_tokens"],result["total_tokens"],ms,time.time()))
+        placeholder="%s" if USE_POSTGRES else "?"
+        cursor.execute(f"INSERT INTO requests_log(api_key,provider,model,prompt_tokens,completion_tokens,total_tokens,status,latency_ms,created_at,error) VALUES({placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder},NULL)",(g.api_key,provider,result.get("raw_model",model),result["prompt_tokens"],result["completion_tokens"],result["total_tokens"],"success",ms,time.time()))
         db.commit()
         return jsonify({"provider":provider,"model":result.get("raw_model",model),"text":result["text"],"usage":{"prompt_tokens":result["prompt_tokens"],"completion_tokens":result["completion_tokens"],"total_tokens":result["total_tokens"]},"latency_ms":ms})
     except Exception as e:
         ms=int((time.time()-start)*1000)
-        db.execute("INSERT INTO requests_log(api_key,provider,model,prompt_tokens,completion_tokens,total_tokens,status,latency_ms,created_at,error) VALUES(?,?,?,0,0,0,'error',?,?,?)",(g.api_key,provider,model,ms,time.time(),str(e)))
-        db.commit();return jsonify({"error":str(e)}),502
+        placeholder="%s" if USE_POSTGRES else "?"
+        cursor.execute(f"INSERT INTO requests_log(api_key,provider,model,prompt_tokens,completion_tokens,total_tokens,status,latency_ms,created_at,error) VALUES({placeholder},{placeholder},{placeholder},0,0,0,{placeholder},{placeholder},{placeholder},{placeholder})",(g.api_key,provider,model,"error",ms,time.time(),str(e)))
+        db.commit()
+        cursor.close()
+        return jsonify({"error":str(e)}),502
+    finally:
+        cursor.close()
 
 @app.route("/v1/usage")
 @require_api_key
 def usage():
     db=get_db()
-    rows=db.execute("SELECT provider,COUNT(*) as requests,SUM(total_tokens) as total_tokens,SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors FROM requests_log WHERE api_key=? GROUP BY provider",(g.api_key,)).fetchall()
+    cursor=db.cursor()
+    placeholder="%s" if USE_POSTGRES else "?"
+    cursor.execute(f"SELECT provider,COUNT(*) as requests,SUM(total_tokens) as total_tokens,SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors FROM requests_log WHERE api_key={placeholder} GROUP BY provider",(g.api_key,))
+    rows=cursor.fetchall()
+    cursor.close()
     return jsonify({"owner":g.api_owner,"usage_by_provider":[dict(r) for r in rows]})
 
 @app.route("/admin/keys",methods=["POST"])
@@ -113,8 +176,12 @@ def create_key():
     body=request.get_json(silent=True) or {}
     key="kw_"+secrets.token_hex(16)
     db=get_db()
-    db.execute("INSERT INTO api_keys(key,owner,created_at,active) VALUES(?,?,?,1)",(key,body.get("owner","unknown"),time.time()))
-    db.commit();return jsonify({"api_key":key,"owner":body.get("owner","unknown")})
+    cursor=db.cursor()
+    placeholder="%s" if USE_POSTGRES else "?"
+    cursor.execute(f"INSERT INTO api_keys(key,owner,created_at,active) VALUES({placeholder},{placeholder},{placeholder},1)",(key,body.get("owner","unknown"),time.time()))
+    db.commit()
+    cursor.close()
+    return jsonify({"api_key":key,"owner":body.get("owner","unknown")})
 
 @app.route("/api/signup",methods=["POST"])
 def signup():
@@ -129,15 +196,20 @@ def signup():
     if len(password)<6:
         return jsonify({"error":"Password must be at least 6 characters."}),400
     db=get_db()
-    existing=db.execute("SELECT email FROM users WHERE email=?",(email,)).fetchone()
+    cursor=db.cursor()
+    placeholder="%s" if USE_POSTGRES else "?"
+    cursor.execute(f"SELECT email FROM users WHERE email={placeholder}",(email,))
+    existing=cursor.fetchone()
     if existing:
+        cursor.close()
         return jsonify({"error":"Account already exists. Sign in instead."}),409
     api_key="kw_"+secrets.token_hex(16)
     pw_hash=generate_password_hash(password)
     now=time.time()
-    db.execute("INSERT INTO users(email,name,password_hash,api_key,created_at) VALUES(?,?,?,?,?)",(email,name,pw_hash,api_key,now))
-    db.execute("INSERT INTO api_keys(key,owner,created_at,active) VALUES(?,?,?,1)",(api_key,name,now))
+    cursor.execute(f"INSERT INTO users(email,name,password_hash,api_key,created_at) VALUES({placeholder},{placeholder},{placeholder},{placeholder},{placeholder})",(email,name,pw_hash,api_key,now))
+    cursor.execute(f"INSERT INTO api_keys(key,owner,created_at,active) VALUES({placeholder},{placeholder},{placeholder},1)",(api_key,name,now))
     db.commit()
+    cursor.close()
     return jsonify({"name":name,"email":email,"api_key":api_key})
 
 @app.route("/api/login",methods=["POST"])
@@ -148,7 +220,11 @@ def login():
     if not email or not password:
         return jsonify({"error":"Fill in both fields."}),400
     db=get_db()
-    user=db.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
+    cursor=db.cursor()
+    placeholder="%s" if USE_POSTGRES else "?"
+    cursor.execute(f"SELECT * FROM users WHERE email={placeholder}",(email,))
+    user=cursor.fetchone()
+    cursor.close()
     if not user:
         return jsonify({"error":"No account found with this email."}),404
     if not check_password_hash(user["password_hash"],password):
@@ -160,7 +236,6 @@ init_db()
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT",8080)),debug=False)
 
-# ── ADMIN DASHBOARD ──
 @app.route("/admin")
 def admin():
     return render_template("admin.html")
@@ -170,13 +245,17 @@ def admin_dashboard():
     if request.headers.get("X-Admin-Secret") != os.environ.get("ADMIN_SECRET","changeme"):
         return jsonify({"error":"unauthorized"}),403
     db = get_db()
-    keys = db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM api_keys ORDER BY created_at DESC")
+    keys = cursor.fetchall()
     result = []
     for k in keys:
-        stats = db.execute(
-            "SELECT COUNT(*) as total_requests, SUM(total_tokens) as total_tokens, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors FROM requests_log WHERE api_key=?",
+        placeholder="%s" if USE_POSTGRES else "?"
+        cursor.execute(
+            f"SELECT COUNT(*) as total_requests, SUM(total_tokens) as total_tokens, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors FROM requests_log WHERE api_key={placeholder}",
             (k["key"],)
-        ).fetchone()
+        )
+        stats = cursor.fetchone()
         result.append({
             "key": k["key"],
             "owner": k["owner"],
@@ -186,6 +265,7 @@ def admin_dashboard():
             "total_tokens": stats["total_tokens"] or 0,
             "errors": stats["errors"] or 0,
         })
+    cursor.close()
     return jsonify({"keys": result})
 
 @app.route("/admin/keys/toggle", methods=["POST"])
@@ -194,7 +274,10 @@ def toggle_key():
         return jsonify({"error":"unauthorized"}),403
     body = request.get_json(silent=True) or {}
     db = get_db()
-    db.execute("UPDATE api_keys SET active=? WHERE key=?",
+    cursor = db.cursor()
+    placeholder="%s" if USE_POSTGRES else "?"
+    cursor.execute(f"UPDATE api_keys SET active={placeholder} WHERE key={placeholder}",
                (1 if body.get("active") else 0, body.get("key")))
     db.commit()
+    cursor.close()
     return jsonify({"ok": True})
