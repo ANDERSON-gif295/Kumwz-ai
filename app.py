@@ -1,4 +1,3 @@
-cat > app.py << 'ENDOFFILE'
 import os,secrets,time
 from functools import wraps
 from flask import Flask,request,jsonify,g,render_template
@@ -11,8 +10,8 @@ DATABASE_URL=os.environ.get("DATABASE_URL")
 USE_POSTGRES=bool(DATABASE_URL)
 
 if USE_POSTGRES:
-    import psycopg
-    from psycopg.rows import dict_row
+    import psycopg2
+    import psycopg2.extras
 else:
     import sqlite3
 
@@ -21,7 +20,8 @@ DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)),"kumwz.db") if n
 def get_db():
     if "db" not in g:
         if USE_POSTGRES:
-            g.db=psycopg.connect(DATABASE_URL,row_factory=dict_row)
+            g.db=psycopg2.connect(DATABASE_URL)
+            g.db.cursor_factory=psycopg2.extras.RealDictCursor
         else:
             g.db=sqlite3.connect(DB_PATH)
             g.db.row_factory=sqlite3.Row
